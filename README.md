@@ -2,6 +2,8 @@
 
 A super fast 'n' simple audio player with an SDL based interface.
 
+**NOTE:** This is still very work in progress and many things state here haven't been implemented yet or are inaccurate.
+
 ## Features
 
 * Navigable audio waveform viewport.
