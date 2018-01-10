@@ -70,3 +70,9 @@ Note that its possible to reverse the viewport so that the audio runs from right
 
 Alternatively hold down the option key while using the left and right arrow keys to pan the viewport left and right.
 Likewise use the up and down arrow keys to zoom in and out.
+
+## Build
+
+To build just type `make`. This produces the `wavy` executable.
+
+To test using the test audio file just type `make test`.
