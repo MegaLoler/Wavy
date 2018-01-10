@@ -94,7 +94,7 @@ struct region
 // a structure to hold audio data
 struct audioBuffer
 {
-  uint16_t* buffer;
+  int16_t* buffer;
   int length;
 };
 
@@ -214,7 +214,7 @@ int selectionExists()
 }
 
 // calculate the sum of the squares in a range of values
-double sumOfSquares(int offset, int length, uint16_t* array, int arrayLength)
+double sumOfSquares(int offset, int length, int16_t* array, int arrayLength)
 {
   int i;
   double sum = 0;
@@ -227,7 +227,7 @@ double sumOfSquares(int offset, int length, uint16_t* array, int arrayLength)
 }
 
 // calculate the root mean square of a range of values in an array
-double rootMeanSquare(int offset, int length, uint16_t* array, int arrayLength)
+double rootMeanSquare(int offset, int length, int16_t* array, int arrayLength)
 {
   return sqrt(sumOfSquares(offset, length, array, arrayLength) / length);
 }
@@ -245,7 +245,7 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
   int sampleRange = viewportEndSample - viewportStartSample;
   float samplesPerPixel = 1.0 * sampleRange / width;
   float minSamplesPerPixel = max(1, samplesPerPixel);
-  int samplePeak = UINT16_MAX;
+  int samplePeak = INT16_MAX;
 
   // draw each column
   int i;
@@ -274,8 +274,9 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
 	  int unfilledHeight = height - filledHeight;
       
 	  // get rects of this column
-	  SDL_Rect filledRect = { i, unfilledHeight, 1, filledHeight };
-	  SDL_Rect unfilledRect = { i, 0, 1, unfilledHeight };
+	  SDL_Rect filledRect = { i, unfilledHeight / 2, 1, filledHeight };
+	  SDL_Rect unfilledRect = { i, 0, 1, unfilledHeight / 2 };
+	  SDL_Rect unfilledRect2 = { i, filledHeight + unfilledHeight / 2, 1, height - (filledHeight + unfilledHeight / 2) };
 
 	  // get the fill colors
 	  Uint32 filledColor;
@@ -295,6 +296,7 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
 	  // fill this column
 	  SDL_FillRect(surface, &filledRect, filledColor);
 	  SDL_FillRect(surface, &unfilledRect, unfilledColor);
+	  SDL_FillRect(surface, &unfilledRect2, unfilledColor);
 	}
     }
 }
@@ -345,7 +347,7 @@ void requestAudio(void* userdata, Uint8* stream, int remainingBytes)
       int offset = 0;
       while(remainingBytes > 0)
 	{
-	  int remainingSamples = remainingBytes / sizeof(uint16_t);
+	  int remainingSamples = remainingBytes / sizeof(int16_t);
 	  // get the nearest stopping point
 	  int end, start;
 	  if(selectionExists())
@@ -374,7 +376,7 @@ void requestAudio(void* userdata, Uint8* stream, int remainingBytes)
 	    len = distance;
 	  else
 	    len = remainingSamples;
-	  int lenBytes = len * sizeof(uint16_t);
+	  int lenBytes = len * sizeof(int16_t);
 
 	  // copy this portion
 	  memcpy(stream + offset,
@@ -976,7 +978,7 @@ void mainLoop()
 struct audioBuffer loadAudioFromFile(const char* filename)
 {
   // create a buffer to store the data
-  uint16_t* buffer = (uint16_t*)calloc(MAX_SAMPLES, sizeof(uint16_t));
+  int16_t* buffer = (int16_t*)calloc(MAX_SAMPLES, sizeof(int16_t));
   struct audioBuffer audioBuffer = { buffer, 0 };
 
   // load the raw data from ffmpeg
@@ -985,7 +987,7 @@ struct audioBuffer loadAudioFromFile(const char* filename)
   char cmd[128];
   sprintf(cmd, "ffmpeg -hide_banner -loglevel panic -i %s -f s16le -ac 1 -", filename);
   pipe = popen(cmd, "r");
-  audioBuffer.length = fread(buffer, sizeof(uint16_t), MAX_SAMPLES, pipe);
+  audioBuffer.length = fread(buffer, sizeof(int16_t), MAX_SAMPLES, pipe);
   pclose(pipe);
 
   // return the buffer struct
