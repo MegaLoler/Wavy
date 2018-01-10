@@ -25,6 +25,8 @@
 #define WINDOW_WIDTH 600
 #define WINDOW_HEIGHT 200
 #define MAX_SAMPLES 1024 * 1024 * 64
+#define SCROLL_PAN_SCALE 8
+#define ZOOM_SCALE 0.1
 
 // enum for abstract user input target
 enum target
@@ -199,22 +201,22 @@ int selectionExists()
 }
 
 // calculate the sum of the squares in a range of values
-double sumOfSquares(int offset, int length, uint16_t* array)
+double sumOfSquares(int offset, int length, uint16_t* array, int arrayLength)
 {
   int i;
   double sum = 0;
   for(i = offset; i < offset + length; i++)
     {
-      double value = array[i];
+      double value = ((i < 0) || (i >= arrayLength)) ? 0 : array[i];
       sum += value * value;
     }
   return sum;
 }
 
 // calculate the root mean square of a range of values in an array
-double rootMeanSquare(int offset, int length, uint16_t* array)
+double rootMeanSquare(int offset, int length, uint16_t* array, int arrayLength)
 {
-  return sqrt(sumOfSquares(offset, length, array) / length);
+  return sqrt(sumOfSquares(offset, length, array, arrayLength) / length);
 }
 
 // draw a waveform on an sdl surface given a viewport
@@ -254,7 +256,7 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
       else
 	{
 	  // this is the sample percentage and pixel conversions
-	  float samplePercent = rootMeanSquare(sampleIndex, minSamplesPerPixel, buffer.buffer) / samplePeak;
+	  float samplePercent = rootMeanSquare(sampleIndex, minSamplesPerPixel, buffer.buffer, buffer.length) / samplePeak;
 	  int filledHeight = height * samplePercent;
 	  int unfilledHeight = height - filledHeight;
       
@@ -264,12 +266,18 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
 
 	  // get the fill colors
 	  Uint32 filledColor;
+	  Uint32 unfilledColor;
 	  // the appropriate waveform color depends on whether its in the user selected region or not
 	  if(inSelection(sampleIndex))
-	    filledColor = SDL_MapRGB(surface->format, 255, 255, 0);
+	    {
+	      filledColor = SDL_MapRGB(surface->format, 255, 255, 0);
+	      unfilledColor = SDL_MapRGB(surface->format, 63, 63, 0);
+	    }
 	  else
-	    filledColor = SDL_MapRGB(surface->format, 255, 0, 0);
-	  Uint32 unfilledColor = SDL_MapRGB(surface->format, 0, 0, 0);
+	    {
+	      filledColor = SDL_MapRGB(surface->format, 255, 0, 0);
+	      unfilledColor = SDL_MapRGB(surface->format, 0, 0, 0);
+	    }
 
 	  // fill this column
 	  SDL_FillRect(surface, &filledRect, filledColor);
@@ -315,31 +323,6 @@ enum target getFinalTarget(enum target target)
   else return target;
 }
 
-// set the values of an abstract user input target
-void setTargetValues(enum target target, struct targetValues values)
-{
-  switch(target)
-    {
-    case PLAY:
-      // set the audio cursor position
-      playPosition = values.primary;
-      break;
-    case REGION:
-      // set the selected region of audio
-      selection.start = values.primary;
-      selection.stop = values.secondary;
-      break;
-    case VIEWPORT:
-      // set the viewport region
-      viewport.start = values.primary;
-      viewport.stop = values.secondary;
-      break;
-    }
-  
-  // show the changes on the screen
-  redrawScreen();
-}
-
 // get the values of an abstract user input target
 struct targetValues getTargetValues(enum target target)
 {
@@ -368,6 +351,44 @@ struct targetValues getTargetValues(enum target target)
   
   // return the values
   return values;
+}
+
+// get either primary or secondary value of target
+int getTargetValue(enum target target, enum action which)
+{
+  // get whichever one it is
+  switch(which)
+    {
+    case PRIMARY:
+      return getTargetValues(target).primary;
+    case SECONDARY:
+      return getTargetValues(target).secondary;
+    }
+}
+
+// set the values of an abstract user input target
+void setTargetValues(enum target target, struct targetValues values)
+{
+  switch(target)
+    {
+    case PLAY:
+      // set the audio cursor position
+      playPosition = values.primary;
+      break;
+    case REGION:
+      // set the selected region of audio
+      selection.start = values.primary;
+      selection.stop = values.secondary;
+      break;
+    case VIEWPORT:
+      // set the viewport region
+      viewport.start = values.primary;
+      viewport.stop = values.secondary;
+      break;
+    }
+  
+  // show the changes on the screen
+  redrawScreen();
 }
 
 // set specifically the primary value of a target
@@ -408,12 +429,18 @@ void setTargetValue(enum target target, int value, enum action which)
     }
 }
 
-// get the sample index at the mouse position
-int getMouseSamplePosition(SDL_Event event)
+// set both values but separate
+void setTargetPrimaryAndSecondaryValues(enum target target, int primary, int secondary)
+{
+  struct targetValues new = { primary, secondary };
+  setTargetValues(target, new);
+}
+
+// get the sample index at a pixel position
+int pixelCoordinateToSample(int x)
 {
   // get pixel coordinates
   int width = mainSurface->w;
-  int x = event.motion.x;
 
   // viewport stuff
   int viewportStartSample = viewport.start;
@@ -422,8 +449,31 @@ int getMouseSamplePosition(SDL_Event event)
   float samplesPerPixel = 1.0 * sampleRange / width;
   int sampleIndex = viewportStartSample + x * samplesPerPixel;
 
-  // return the sample indexd
+  // return the sample index
   return sampleIndex;
+}
+
+// get the pixel position of a sample
+int sampleToPixelCoordinate(int position)
+{
+  // get pixel coordinates
+  int width = mainSurface->w;
+
+  // viewport stuff
+  int viewportStartSample = viewport.start;
+  int viewportEndSample = viewport.stop;
+  int sampleRange = viewportEndSample - viewportStartSample;
+  float samplesPerPixel = 1.0 * sampleRange / width;
+  int pixelPosition = (position - viewportStartSample) / samplesPerPixel;
+
+  // return the pixel position
+  return pixelPosition;
+}
+
+// get the sample index at the mouse position
+int getMouseSamplePosition(SDL_Event event)
+{
+  return pixelCoordinateToSample(event.motion.x);
 }
 
 enum action getNearestSelectionPole(int position)
@@ -445,7 +495,15 @@ void initiateSelection(int position)
   struct modifiers modifiers = getModifiers();
   if(modifiers.shift)
     {
+      // grab the nearest pole
       selectionGrabbedPole = getNearestSelectionPole(position);
+
+      // get the pixel position of that pole
+      int pole = getTargetValue(REGION, selectionGrabbedPole);
+      int pixelPosition = sampleToPixelCoordinate(pole);
+
+      // warp the mouse to the pole
+      SDL_WarpMouseInWindow(mainWindow, pixelPosition, mainSurface->h / 2);
     }
   // otherwise grab the nearest pole
   else
@@ -471,6 +529,51 @@ void cancelSelection()
   setTargetBothValues(REGION, 0);
 }
 
+// general zoom the viewport
+void zoom(int origin, double amount)
+{
+  // calculate scale factor from zoom amount
+  double scale = pow(2, amount * ZOOM_SCALE);
+
+  // get the distance the origin is from both ends of the viewport
+  int startDelta = viewport.start - origin;
+  int stopDelta = viewport.stop - origin;
+
+  // scale those distances
+  startDelta /= scale;
+  stopDelta /= scale;
+
+  // set the new viewport
+  setTargetPrimaryAndSecondaryValues(VIEWPORT,
+				     origin + startDelta,
+				     origin + stopDelta);
+}
+
+// general pan the viewport
+void pan(int delta)
+{
+  // get pixel coordinates
+  int width = mainSurface->w;
+
+  // viewport stuff
+  int viewportStartSample = viewport.start;
+  int viewportEndSample = viewport.stop;
+  int sampleRange = viewportEndSample - viewportStartSample;
+  float samplesPerPixel = 1.0 * sampleRange / width;
+  int deltaSamples = delta * samplesPerPixel;
+
+  // set the new viewport
+  setTargetPrimaryAndSecondaryValues(VIEWPORT,
+				     viewport.start - deltaSamples,
+				     viewport.stop - deltaSamples);
+}
+
+// pan the viewport with mouse drag
+void dragViewport(SDL_Event event)
+{
+  pan(event.motion.xrel);
+}
+
 // deal with mouse drags
 void mouseDrag(SDL_Event event, enum target target)
 {
@@ -489,7 +592,7 @@ void mouseDrag(SDL_Event event, enum target target)
       continueSelection(getMouseSamplePosition(event));
       break;
     case VIEWPORT:
-      // clicking on viewport does nothing
+      dragViewport(event);
       break;
     }
 }
@@ -555,15 +658,23 @@ void handleMouseButtonEvent(SDL_Event event)
 	case PLAY:
 	  // set the play position
 	  setTargetPrimaryValue(target, getMouseSamplePosition(event));
+	  // grab mouse cursor
+	  SDL_SetRelativeMouseMode(1);
 	  break;
 	case REGION:
 	  // initiate a selection
 	  initiateSelection(getMouseSamplePosition(event));
 	  break;
 	case VIEWPORT:
-	  // clicking on viewport does nothing
+	  // grab mouse cursor
+	  SDL_SetRelativeMouseMode(1);
 	  break;
 	}
+    }
+  else
+    {
+      // release mouse cursor
+      SDL_SetRelativeMouseMode(0);
     }
 }
 
@@ -573,7 +684,13 @@ void handleMouseWheelEvent(SDL_Event event)
   // mouse wheel is viewport by default
   enum target target = getFinalTarget(VIEWPORT);
 
-  //////
+  // do a general pan for how much was scrolled horizontally
+  pan(event.wheel.x * SCROLL_PAN_SCALE);
+  
+  // and a general zoom for how much was scrolled vertically
+  int x;
+  SDL_GetMouseState(&x, NULL);
+  zoom(pixelCoordinateToSample(x), event.wheel.y);
 }
 
 // the main sdl gui loop
