@@ -376,7 +376,7 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
 	  memcpy(stream + offset,
 		 audioBuffer.buffer + playPosition,
 		 len);
-	  playPosition += len;
+	  playPosition += len / sizeof(uint16_t);
 	  offset += len;
 	  remaining -= len;
 
