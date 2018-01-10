@@ -1,13 +1,16 @@
 /* TODO:
  *   variable audio format (not hardcoded to 16bit mono)
- *   hardware accelerate the waveform rendering
  *   dynamic allocate audio buffer rather than set max
- *   only rerender damaged areas
- *   drop redundant ui events? like mouse motion?
+ *   rendering optimizations:
+ *     hardware accelerate the waveform rendering
+ *     only rerender damaged areas
+ *     drop redundant ui events? like mouse motion?
+ *     vsync the playback animation
  */
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <SDL2/SDL.h>
@@ -26,7 +29,11 @@
 #define WINDOW_HEIGHT 200
 #define MAX_SAMPLES 1024 * 1024 * 64
 #define SCROLL_PAN_SCALE 8
-#define ZOOM_SCALE 0.1
+#define SCROLL_ZOOM_SCALE 0.1
+#define KEY_PAN_SCALE 30
+#define KEY_ZOOM_SCALE 0.15
+#define PLAY_BUFFER_SIZE 1024
+#define ASYNC_PLAY_ANIMATION 0
 
 // enum for abstract user input target
 enum target
@@ -46,12 +53,15 @@ enum action
 // global vars
 struct cliArgs cliArgs; // to hold the cli args
 struct audioBuffer audioBuffer; // to hold the loaded audio
+SDL_AudioDeviceID audioDevice; // sdl audio device id
 
-// user input targets
+// user input related state
 int playPosition; // current sample
 struct region selection; // currently selected portion
 struct region viewport; // currently viewed portion of audio
 enum action selectionGrabbedPole; // currently grabbed end
+int looping; // currently looping or not
+int playing; // currently playing or not
 
 // sdl resources
 SDL_Window* mainWindow; // main window
@@ -145,7 +155,7 @@ int initSDL()
   mainSurface = NULL;
   
   // setup sdl subsystems
-  if(SDL_Init(SDL_INIT_VIDEO) < 0)
+  if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0)
     {
       fprintf(stderr, "Error initializing SDL subsystems!\n");
       return -1;
@@ -175,6 +185,7 @@ int initSDL()
 void cleanupSDL()
 {
   // destroy the main window and quit sdl subsystems
+  SDL_CloseAudioDevice(audioDevice);
   SDL_DestroyWindow(mainWindow);
   SDL_Quit();
 }
@@ -286,6 +297,16 @@ void drawWaveform(SDL_Surface* surface, struct audioBuffer buffer, struct region
     }
 }
 
+// update the window title to show status
+void updateWindowTitle()
+{
+  char title[32];
+  sprintf(title, "Wavy: [%s] [%s]",
+	  playing ? "P" : "-",
+	  looping ? "L" : "-");
+  SDL_SetWindowTitle(mainWindow, title);
+}
+
 // used to draw the screen when something changes
 // todo: only update within a damaged rect ?
 void redrawScreen()
@@ -293,6 +314,102 @@ void redrawScreen()
   // this is all just temp stuff
   drawWaveform(mainSurface, audioBuffer, viewport);
   SDL_UpdateWindowSurface(mainWindow);
+}
+
+// play if paused, pause if playing
+void togglePlaying()
+{
+  playing = !playing;
+  updateWindowTitle();
+  // unpause if playing
+  if(playing) SDL_PauseAudioDevice(audioDevice, 0);
+}
+
+// toggle whether audio should loop
+void toggleLooping()
+{
+  looping = !looping;
+  updateWindowTitle();
+}
+
+// sdl audio fetch callback for more audio
+void requestAudio(void* userdata, Uint8* stream, int remaining)
+{
+  if(playing)
+    {
+      // if playing, fill the provided buffer with audio to play
+      // copy regions of audio until the end of file or region
+      // then either stop or loop depending on looping status
+      int offset = 0;
+      while(remaining > 0)
+	{
+	  // get the nearest stopping point
+	  int end, start;
+	  if(selectionExists())
+	    {
+	      end = max(selection.start,
+			selection.stop);
+	      start = min(selection.start,
+			  selection.stop);
+	    }
+	  else
+	    {
+	      end = audioBuffer.length;
+	      start = 0;
+	    }
+	  // make sure the play position isnt greater than the end
+	  // or less than start
+	  if(playPosition > end) playPosition = end;
+	  if(playPosition < start ||
+	     playPosition == end)
+	    playPosition = start;
+	  int distance = end - playPosition;
+
+	  // only copy to the nearest stopping point
+	  int len;
+	  if(distance < remaining)
+	    len = distance;
+	  else
+	    len = remaining;
+
+	  // copy this portion
+	  memcpy(stream + offset,
+		 audioBuffer.buffer + playPosition,
+		 len);
+	  playPosition += len;
+	  offset += len;
+	  remaining -= len;
+
+	  // if theres some left over, see if loop is on
+	  if(remaining > 0)
+	    {
+	      if(looping)
+		{
+		  // loop back to begining of selection
+		  playPosition = start;
+		}
+	      else
+		{
+		  // looks like loop is off
+		  // meaning playback has got to end here. >:(
+		  togglePlaying();
+		  // and fill the rest with silecnc while ur at it
+		  memset(stream + offset, 0, remaining);
+		  break; // <- very very important!! ><
+		}
+	    }
+	}
+      
+      // redraw the screen for the playhead
+      if(!ASYNC_PLAY_ANIMATION) redrawScreen();
+    }
+  else
+    {
+      // if not playing, got to give sdl some silence
+      //memset(stream, 0, remaining);
+      // also as a bonus pause audio device if not playing
+      SDL_PauseAudioDevice(audioDevice, !playing);
+    }
 }
 
 // see which modifiers are currently held down
@@ -533,7 +650,7 @@ void cancelSelection()
 void zoom(int origin, double amount)
 {
   // calculate scale factor from zoom amount
-  double scale = pow(2, amount * ZOOM_SCALE);
+  double scale = pow(2, amount);
 
   // get the distance the origin is from both ends of the viewport
   int startDelta = viewport.start - origin;
@@ -598,7 +715,7 @@ void mouseDrag(SDL_Event event, enum target target)
 }
 
 // handle window events
-void handleWindowEvent(SDL_Event event)
+int handleWindowEvent(SDL_Event event)
 {
   switch(event.window.event)
     {
@@ -608,15 +725,62 @@ void handleWindowEvent(SDL_Event event)
       redrawScreen();
       break;
     }
+
+  // return 0 to mean no quit
+  return 0;
 }
 
 // handle key events
-void handleKeyboardEvent(SDL_Event event)
+int handleKeyboardEvent(SDL_Event event)
 {
+  // ignure key ups
+  if(event.key.type == SDL_KEYDOWN)
+    {
+      // which physical key?
+      // arrow keys pan or zoom
+      switch(event.key.keysym.scancode)
+	{
+	case SDL_SCANCODE_UP:
+	  zoom(pixelCoordinateToSample(mainSurface->w / 2),
+	       KEY_ZOOM_SCALE);
+	  break;
+	case SDL_SCANCODE_DOWN:
+	  zoom(pixelCoordinateToSample(mainSurface->w / 2),
+	       -KEY_ZOOM_SCALE);
+	  break;
+	case SDL_SCANCODE_LEFT:
+	  pan(KEY_PAN_SCALE);
+	  break;
+	case SDL_SCANCODE_RIGHT:
+	  pan(-KEY_PAN_SCALE);
+	  break;
+	}
+      
+      // now which virtual key?
+      // these are for mnemonic hotkeys
+      switch(event.key.keysym.sym)
+	{
+	case SDLK_SPACE:
+	  // play pause key
+	  togglePlaying();
+	  break;
+	case SDLK_q:
+	  // quit
+	  return -1;
+	  break;
+	case SDLK_l:
+	  // toggle looping
+	  toggleLooping();
+	  break;
+	}
+    }
+
+  // return 0 to mean no quit
+  return 0;
 }
 
 // handle mouse move events
-void handleMouseMotionEvent(SDL_Event event)
+int handleMouseMotionEvent(SDL_Event event)
 {
   // this is for dragging events really
   // so make appropriate mouse drag events out of this
@@ -627,10 +791,13 @@ void handleMouseMotionEvent(SDL_Event event)
     mouseDrag(event, REGION);
   if(state & SDL_BUTTON_MMASK)
     mouseDrag(event, VIEWPORT);
+  
+  // return 0 for no quit event
+  return 0;
 }
 
 // handle mouse button events
-void handleMouseButtonEvent(SDL_Event event)
+int handleMouseButtonEvent(SDL_Event event)
 {
   // ignore mouse ups
   if(event.button.state == SDL_PRESSED)
@@ -676,10 +843,13 @@ void handleMouseButtonEvent(SDL_Event event)
       // release mouse cursor
       SDL_SetRelativeMouseMode(0);
     }
+  
+  // return 0 for no quit event
+  return 0;
 }
 
 // handle mouse wheel events
-void handleMouseWheelEvent(SDL_Event event)
+int handleMouseWheelEvent(SDL_Event event)
 {
   // mouse wheel is viewport by default
   enum target target = getFinalTarget(VIEWPORT);
@@ -690,40 +860,62 @@ void handleMouseWheelEvent(SDL_Event event)
   // and a general zoom for how much was scrolled vertically
   int x;
   SDL_GetMouseState(&x, NULL);
-  zoom(pixelCoordinateToSample(x), event.wheel.y);
+  zoom(pixelCoordinateToSample(x), event.wheel.y * SCROLL_ZOOM_SCALE);
+  
+  // return 0 for no quit event
+  return 0;
+}
+
+// process an SDL event
+int processEvent(SDL_Event event)
+{
+  switch(event.type)
+    {
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+      return handleKeyboardEvent(event);
+    case SDL_MOUSEMOTION:
+      return handleMouseMotionEvent(event);
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+      return handleMouseButtonEvent(event);
+    case SDL_MOUSEWHEEL:
+      return handleMouseWheelEvent(event);
+    case SDL_WINDOWEVENT:
+      return handleWindowEvent(event);
+    case SDL_QUIT:
+      // return non-zero to mean exit
+      return -1;
+    }
+  // return 0 for no quit event
+  return 0;
 }
 
 // the main sdl gui loop
 void mainLoop()
 {
-  // draw the screen for the first time
-  redrawScreen();
-  
   // wait for sdl events
   SDL_Event event;
-  while(SDL_WaitEvent(&event))
+
+  // wait for events until a quit event is received
+  while(1)
     {
-      switch(event.type)
+      // when playing, we need to animate every frame
+      // if set that way anyways
+      if(ASYNC_PLAY_ANIMATION && playing)
 	{
-	case SDL_KEYDOWN:
-	case SDL_KEYUP:
-	  handleKeyboardEvent(event);
-	  break;
-	case SDL_MOUSEMOTION:
-	  handleMouseMotionEvent(event);
-	  break;
-	case SDL_MOUSEBUTTONDOWN:
-	case SDL_MOUSEBUTTONUP:
-	  handleMouseButtonEvent(event);
-	  break;
-	case SDL_MOUSEWHEEL:
-	  handleMouseWheelEvent(event);
-	  break;
-	case SDL_WINDOWEVENT:
-	  handleWindowEvent(event);
-	  break;
-	case SDL_QUIT:
-	  return;
+	  while(SDL_PollEvent(&event))
+	    {
+	      if(processEvent(event)) return;
+	    }
+	  // update the screen for the playhead
+	  redrawScreen();
+	}
+      // otherwise just take events as they come
+      else
+	{
+	  SDL_WaitEvent(&event);
+	  if(processEvent(event)) break;
 	}
     }
 }
@@ -738,7 +930,9 @@ struct audioBuffer loadAudioFromFile(const char* filename)
   // load the raw data from ffmpeg
   // for now just force mono and 16bit
   FILE* pipe;
-  pipe = popen("ffmpeg -hide_banner -loglevel panic -i test.mp3 -f s16le -ac 1 -", "r");
+  char cmd[128];
+  sprintf(cmd, "ffmpeg -hide_banner -loglevel panic -i %s -f s16le -ac 1 -", filename);
+  pipe = popen(cmd, "r");
   audioBuffer.length = fread(buffer, sizeof(uint16_t), MAX_SAMPLES, pipe);
   pclose(pipe);
 
@@ -747,7 +941,8 @@ struct audioBuffer loadAudioFromFile(const char* filename)
 }
 
 // load the given audio file from the cli
-int loadAudio()
+// also init sdl audio stuff
+int initAudio()
 {
   // make sure a filename was given
   if(cliArgs.filename == NULL)
@@ -759,6 +954,28 @@ int loadAudio()
   // load the audio into the buffer
   audioBuffer = loadAudioFromFile(cliArgs.filename);
   if(audioBuffer.length == 0) return -1;
+
+  // init sdl audio
+  // copied from sdl wiki mostly
+  SDL_AudioSpec want, have;
+
+  // desired audio out format
+  SDL_memset(&want, 0, sizeof(want));
+  want.freq = 44100;
+  want.format = AUDIO_S16;
+  want.channels = 1;
+  want.samples = PLAY_BUFFER_SIZE;
+  want.callback = requestAudio;
+
+  // init the audio device
+  audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+  if(audioDevice == 0)
+    {
+      fprintf(stderr, "Failed to open audio: %s", SDL_GetError());
+      return -1;
+    }
+  // unpause and have it poll all it wants muahuahuahuahuah
+  SDL_PauseAudioDevice(audioDevice, !cliArgs.autoplay);
   
   // it all went well
   return 0;
@@ -777,6 +994,16 @@ void initInterface()
 
   // set the audio cursor at the beginning
   playPosition = 0;
+
+  // set things from cli args
+  playing = cliArgs.autoplay;
+  looping = cliArgs.autoloop;
+
+  // update window title
+  updateWindowTitle();
+
+  // draw the screen for the first time
+  redrawScreen();
 }
 
 // main program starts here!
@@ -797,8 +1024,8 @@ int main(int argc, const char* argv[])
       return -1;
     }
 
-  // load the audio file
-  if(loadAudio())
+  // load the audio file and init playback buffer
+  if(initAudio())
     {
       fprintf(stderr, "Error loading the audio file!\n");
       return -1;
