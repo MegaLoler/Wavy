@@ -11,3 +11,6 @@ test: wavy
 
 clean: wavy
 	rm wavy
+
+install: wavy
+	cp wavy /usr/local/bin

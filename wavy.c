@@ -335,7 +335,7 @@ void toggleLooping()
 }
 
 // sdl audio fetch callback for more audio
-void requestAudio(void* userdata, Uint8* stream, int remaining)
+void requestAudio(void* userdata, Uint8* stream, int remainingBytes)
 {
   if(playing)
     {
@@ -343,8 +343,9 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
       // copy regions of audio until the end of file or region
       // then either stop or loop depending on looping status
       int offset = 0;
-      while(remaining > 0)
+      while(remainingBytes > 0)
 	{
+	  int remainingSamples = remainingBytes / sizeof(uint16_t);
 	  // get the nearest stopping point
 	  int end, start;
 	  if(selectionExists())
@@ -369,21 +370,22 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
 
 	  // only copy to the nearest stopping point
 	  int len;
-	  if(distance < remaining)
+	  if(distance < remainingSamples)
 	    len = distance;
 	  else
-	    len = remaining;
+	    len = remainingSamples;
+	  int lenBytes = len * sizeof(uint16_t);
 
 	  // copy this portion
 	  memcpy(stream + offset,
 		 audioBuffer.buffer + playPosition,
-		 len);
-	  playPosition += len / sizeof(uint16_t);
-	  offset += len;
-	  remaining -= len;
+		 lenBytes);
+	  playPosition += len;
+	  offset += lenBytes;
+	  remainingBytes -= lenBytes;
 
 	  // if theres some left over, see if loop is on
-	  if(remaining > 0)
+	  if(remainingBytes > 0)
 	    {
 	      if(looping)
 		{
@@ -402,7 +404,7 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
 		  // while resizing the window at the same time
 		  redrawScreen();
 		  // and fill the rest with silecnc while ur at it
-		  memset(stream + offset, 0, remaining);
+		  memset(stream + offset, 0, remainingBytes);
 		  break; // <- very very important!! ><
 		}
 	    }
