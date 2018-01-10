@@ -1,6 +1,7 @@
 /* TODO:
  *   variable audio format (not hardcoded to 16bit mono)
  *   dynamic allocate audio buffer rather than set max
+ *   fix crash on resize while playing
  *   rendering optimizations:
  *     hardware accelerate the waveform rendering
  *     only rerender damaged areas
@@ -30,6 +31,7 @@
 #define MAX_SAMPLES 1024 * 1024 * 64
 #define SCROLL_PAN_SCALE 8
 #define SCROLL_ZOOM_SCALE 0.1
+#define KEY_STEP_SCALE 10
 #define KEY_PAN_SCALE 30
 #define KEY_ZOOM_SCALE 0.15
 #define PLAY_BUFFER_SIZE 1024
@@ -393,6 +395,12 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
 		  // looks like loop is off
 		  // meaning playback has got to end here. >:(
 		  togglePlaying();
+		  // be sure to update the screen
+		  // (not reduntant, below is only when playing)
+		  // but this is a temp workaround
+		  // to /help/ prevent crashing when playing
+		  // while resizing the window at the same time
+		  redrawScreen();
 		  // and fill the rest with silecnc while ur at it
 		  memset(stream + offset, 0, remaining);
 		  break; // <- very very important!! ><
@@ -401,7 +409,7 @@ void requestAudio(void* userdata, Uint8* stream, int remaining)
 	}
       
       // redraw the screen for the playhead
-      if(!ASYNC_PLAY_ANIMATION) redrawScreen();
+      if(!ASYNC_PLAY_ANIMATION && playing) redrawScreen();
     }
   else
     {
@@ -720,7 +728,12 @@ int handleWindowEvent(SDL_Event event)
   switch(event.window.event)
     {
     case SDL_WINDOWEVENT_SIZE_CHANGED:
+      // temporary to (help) prevent crashing while playing...
+      // still doesnt solve it tho
+      if(playing) togglePlaying();
+      // anyway, get the new surface
       mainSurface = SDL_GetWindowSurface(mainWindow);
+      break;
     case SDL_WINDOWEVENT_EXPOSED:
       redrawScreen();
       break;
@@ -736,23 +749,59 @@ int handleKeyboardEvent(SDL_Event event)
   // ignure key ups
   if(event.key.type == SDL_KEYDOWN)
     {
+      // key events are all position by default
+      enum target target = getFinalTarget(PLAY);
+      
+      // get pixel coordinates
+      int width = mainSurface->w;
+
+      // viewport stuff
+      int viewportStartSample = viewport.start;
+      int viewportEndSample = viewport.stop;
+      int sampleRange = viewportEndSample - viewportStartSample;
+      float samplesPerPixel = 1.0 * sampleRange / width;
+      int step = KEY_STEP_SCALE * samplesPerPixel;
+      
       // which physical key?
-      // arrow keys pan or zoom
-      switch(event.key.keysym.scancode)
+      // arrow keys
+      switch(target)
 	{
-	case SDL_SCANCODE_UP:
-	  zoom(pixelCoordinateToSample(mainSurface->w / 2),
-	       KEY_ZOOM_SCALE);
+	case PLAY:
+	case REGION:
+	  switch(event.key.keysym.scancode)
+	    {
+	    case SDL_SCANCODE_RIGHT:
+	      setTargetPrimaryValue(target, getTargetValues(target).primary + step);
+	      break;
+	    case SDL_SCANCODE_LEFT:
+	      setTargetPrimaryValue(target, getTargetValues(target).primary - step);
+	      break;
+	    case SDL_SCANCODE_DOWN:
+	      setTargetSecondaryValue(target, getTargetValues(target).secondary - step);
+	      break;
+	    case SDL_SCANCODE_UP:
+	      setTargetSecondaryValue(target, getTargetValues(target).secondary + step);
+	      break;
+	    }
 	  break;
-	case SDL_SCANCODE_DOWN:
-	  zoom(pixelCoordinateToSample(mainSurface->w / 2),
-	       -KEY_ZOOM_SCALE);
-	  break;
-	case SDL_SCANCODE_LEFT:
-	  pan(KEY_PAN_SCALE);
-	  break;
-	case SDL_SCANCODE_RIGHT:
-	  pan(-KEY_PAN_SCALE);
+	case VIEWPORT:
+	  switch(event.key.keysym.scancode)
+	    {
+	    case SDL_SCANCODE_UP:
+	      zoom(pixelCoordinateToSample(mainSurface->w / 2),
+		   KEY_ZOOM_SCALE);
+	      break;
+	    case SDL_SCANCODE_DOWN:
+	      zoom(pixelCoordinateToSample(mainSurface->w / 2),
+		   -KEY_ZOOM_SCALE);
+	      break;
+	    case SDL_SCANCODE_LEFT:
+	      pan(KEY_PAN_SCALE);
+	      break;
+	    case SDL_SCANCODE_RIGHT:
+	      pan(-KEY_PAN_SCALE);
+	      break;
+	    }
 	  break;
 	}
       
@@ -764,13 +813,14 @@ int handleKeyboardEvent(SDL_Event event)
 	  // play pause key
 	  togglePlaying();
 	  break;
-	case SDLK_q:
-	  // quit
-	  return -1;
-	  break;
 	case SDLK_l:
 	  // toggle looping
 	  toggleLooping();
+	  break;
+	case SDLK_ESCAPE:
+	case SDLK_q:
+	  // quit
+	  return -1;
 	  break;
 	}
     }
