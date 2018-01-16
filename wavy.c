@@ -36,6 +36,7 @@
 #define KEY_ZOOM_SCALE 0.15
 #define PLAY_BUFFER_SIZE 1024
 #define ASYNC_PLAY_ANIMATION 0
+#define EXPORT_FILE_NAME "~/tmp.mp3"
 
 // enum for abstract user input target
 enum target
@@ -821,6 +822,10 @@ int handleKeyboardEvent(SDL_Event event)
 	  // toggle looping
 	  toggleLooping();
 	  break;
+	case SDLK_e:
+	  // export selected snippet
+	  exportSnippet();
+	  break;
 	case SDLK_ESCAPE:
 	case SDLK_q:
 	  // quit
@@ -974,6 +979,19 @@ void mainLoop()
     }
 }
 
+// save a buffer to an audio file using ffmpeg
+void saveAudioToFile(struct audioBuffer buffer, const char* filename)
+{
+  // save the raw data with ffmpeg
+  // for now just force mono and 16bit
+  char cmd[128];
+  sprintf(cmd, "ffmpeg -y -f s16le -ar 44100 -ac 1 -i - %s", filename);
+  FILE* pipe;
+  pipe = popen(cmd, "w");
+  fwrite(buffer.buffer, sizeof(uint16_t), buffer.length, pipe);
+  pclose(pipe);
+}
+
 // load an audio file into a buffer using ffmpeg
 struct audioBuffer loadAudioFromFile(const char* filename)
 {
@@ -992,6 +1010,21 @@ struct audioBuffer loadAudioFromFile(const char* filename)
 
   // return the buffer struct
   return audioBuffer;
+}
+
+// export the selected region of audio to a tmp file
+void exportSnippet()
+{
+  // can only export a snippet if there's a selection to export
+  if(selectionExists())
+    {
+      int end = max(selection.start, selection.stop);
+      int start = min(selection.start, selection.stop);
+      int16_t* exportBuffer = audioBuffer.buffer + start;
+      int exportLength = end - start;
+      struct audioBuffer saveBuffer = { exportBuffer, exportLength };
+      saveAudioToFile(saveBuffer, EXPORT_FILE_NAME);
+    }
 }
 
 // load the given audio file from the cli
