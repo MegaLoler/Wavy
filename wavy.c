@@ -102,7 +102,7 @@ struct audioBuffer
 // structure to hold the cli args
 struct cliArgs
 {
-  const char* filename;
+  char* filename;
   int autoplay;
   int autoloop;
 };
@@ -131,7 +131,17 @@ int loadCliArgs(struct cliArgs* cliArgs, int argc, const char* argv[])
 	cliArgs->autoplay = 0;
       // filename
       else
-	cliArgs->filename = arg;
+	{
+	  // just grab the rest of the args as a whole string
+	  cliArgs->filename = (char*)malloc(512);
+	  int j;
+	  for(j = i; j < argc; j++)
+	    {
+	      if(i == j) strcpy(cliArgs->filename, argv[j]);
+	      else strcat(cliArgs->filename, argv[j]);
+	    }
+	  break;
+	}
     }
 
   // all was good
@@ -1003,7 +1013,8 @@ struct audioBuffer loadAudioFromFile(const char* filename)
   // for now just force mono and 16bit
   FILE* pipe;
   char cmd[128];
-  sprintf(cmd, "ffmpeg -hide_banner -loglevel panic -i %s -f s16le -ac 1 -", filename);
+  sprintf(cmd, "ffmpeg -hide_banner -loglevel panic -i \"%s\" -f s16le -ac 1 -", filename);
+  
   pipe = popen(cmd, "r");
   audioBuffer.length = fread(buffer, sizeof(int16_t), MAX_SAMPLES, pipe);
   pclose(pipe);
